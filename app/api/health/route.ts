@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { getDatabase } from "@/lib/database";
+import { checkDatabaseConnection } from "@/lib/database";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export function GET() {
+export async function GET() {
   try {
-    getDatabase().prepare("SELECT 1").get();
+    await checkDatabaseConnection();
     return NextResponse.json({ data: { status: "ok", database: "ok" } });
   } catch (error) {
     console.error("Health check failed:", error);
