@@ -1,675 +1,1001 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import type { FormEvent } from 'react';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { AnimatePresence, MotionConfig, motion, useReducedMotion } from 'framer-motion';
+import { useEffect, useRef, useState } from 'react';
+import { Controller, useForm } from 'react-hook-form';
+import type { KeyboardEvent, ReactNode } from 'react';
+import type { LeadInterest } from '@/lib/lead-validation';
+import { z } from 'zod';
 
-type FormState = {
-  name: string;
-  phone: string;
-  interest: 'subscription' | 'single_order' | 'question';
-  comment: string;
+const phonePattern = /^[+\d\s()-]+$/;
+
+const leadSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(2, 'Введите имя — не короче двух символов.')
+    .max(100, 'Имя не должно быть длиннее 100 символов.'),
+  phone: z
+    .string()
+    .trim()
+    .refine((phone) => {
+      if (!phonePattern.test(phone)) return false;
+      const digits = phone.replace(/\D/g, '');
+      return (
+        (phone.startsWith('+') && /^375\d{9}$/.test(digits)) ||
+        /^375\d{9}$/.test(digits) ||
+        /^80\d{9}$/.test(digits) ||
+        /^\d{9}$/.test(digits)
+      );
+    }, 'Введите белорусский номер, например +375 29 123-45-67.'),
+  interest: z.enum(['subscription', 'single_order', 'question']),
+  comment: z.string().max(1000, 'Комментарий не должен быть длиннее 1000 символов.'),
+});
+
+type LeadFormValues = z.infer<typeof leadSchema>;
+
+type ResponseMessage = {
+  type: 'success' | 'error';
+  text: string;
 };
 
-type SubmitState = {
-  status: 'idle' | 'loading' | 'success' | 'error';
-  message: string;
-};
+const interestOptions: { value: LeadInterest; label: string; description: string }[] = [
+  { value: 'subscription', label: 'Подписка на кофе', description: 'Две пачки каждый месяц' },
+  { value: 'single_order', label: 'Разовый заказ', description: 'Выбрать свежее зерно' },
+  { value: 'question', label: 'Хочу задать вопрос', description: 'Поможем разобраться' },
+];
 
-type FormErrors = Partial<Record<keyof FormState, string>>;
-
-const initialForm: FormState = {
+const initialValues: LeadFormValues = {
   name: '',
   phone: '',
   interest: 'subscription',
   comment: '',
 };
 
-function parseUtm() {
-  const search = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
-  return {
-    utm_source: search.get('utm_source') ?? null,
-    utm_medium: search.get('utm_medium') ?? null,
-    utm_campaign: search.get('utm_campaign') ?? null,
-    utm_content: search.get('utm_content') ?? null,
-    utm_term: search.get('utm_term') ?? null,
-    gclid: search.get('gclid') ?? null,
-    pageUrl: typeof window !== 'undefined' ? window.location.href : null,
-  };
+const products = [
+  {
+    number: '01',
+    origin: 'Эфиопия · Иргачеффе',
+    name: 'Светлая сторона',
+    notes: 'Бергамот, жасмин, сочный персик',
+    process: 'Мытая обработка',
+    roast: 'Светлая обжарка',
+    price: '32',
+    label: 'Фильтр',
+    photo:
+      'https://images.unsplash.com/photo-1442512595331-e89e73853f31?auto=format&fit=crop&w=900&q=85',
+    bean: 'Эфиопия',
+  },
+  {
+    number: '02',
+    origin: 'Колумбия · Уила',
+    name: 'Яблочный пирог',
+    notes: 'Карамель, красное яблоко, какао',
+    process: 'Натуральная обработка',
+    roast: 'Средняя обжарка',
+    price: '29',
+    label: 'Любимец',
+    photo:
+      'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=900&q=85',
+    bean: 'Колумбия',
+  },
+  {
+    number: '03',
+    origin: 'Бразилия · Серрадо',
+    name: 'Тихое утро',
+    notes: 'Фундук, молочный шоколад, пралине',
+    process: 'Палповая обработка',
+    roast: 'Под эспрессо',
+    price: '26',
+    label: 'Для эспрессо',
+    photo:
+      'https://images.unsplash.com/photo-1447933601403-0c6688de566e?auto=format&fit=crop&w=900&q=85',
+    bean: 'Бразилия',
+  },
+  {
+    number: '04',
+    origin: 'Кварта · ассорти',
+    name: 'Кофе с собой',
+    notes: 'Десять хороших чашек где угодно',
+    process: '10 дрип-пакетов',
+    roast: 'Разные лоты',
+    price: '18',
+    label: 'В дорогу',
+    photo:
+      'https://images.unsplash.com/photo-1511920170033-f8396924c348?auto=format&fit=crop&w=900&q=85',
+    bean: 'Дрип',
+  },
+];
+
+const reveal = {
+  hidden: { opacity: 0, y: 24 },
+  visible: { opacity: 1, y: 0 },
+};
+
+const stagger = {
+  hidden: {},
+  visible: { transition: { staggerChildren: 0.1 } },
+};
+
+function ArrowIcon({ diagonal = false }: { diagonal?: boolean }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-4 w-4"
+      fill="none"
+      viewBox="0 0 20 20"
+    >
+      {diagonal ? (
+        <path d="M5 15 15 5M6 5h9v9" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
+      ) : (
+        <path d="M3.5 10h12m-5-5 5 5-5 5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
+      )}
+    </svg>
+  );
 }
 
-function validateField<K extends keyof FormState>(field: K, value: FormState[K]): string | undefined {
-  if (field === 'name') {
-    const name = String(value).trim();
-    if (name.length < 2 || name.length > 100) {
-      return 'Укажите имя длиной от 2 до 100 символов.';
-    }
-  }
-
-  if (field === 'phone') {
-    const phone = String(value).trim();
-    const digits = phone.replace(/\D/g, '');
-    const validCharacters = /^[+\d\s()-]+$/.test(phone);
-    const validBelarusianNumber =
-      (phone.startsWith('+') && /^375\d{9}$/.test(digits)) ||
-      /^375\d{9}$/.test(digits) ||
-      /^80\d{9}$/.test(digits) ||
-      /^\d{9}$/.test(digits);
-
-    if (!validCharacters || !validBelarusianNumber) {
-      return 'Введите белорусский номер, например +375 29 123-45-67.';
-    }
-  }
-
-  if (field === 'comment' && String(value).length > 1000) {
-    return 'Комментарий не должен быть длиннее 1000 символов.';
-  }
-
-  return undefined;
+function BeanMark({ light = false }: { light?: boolean }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={`h-7 w-7 ${light ? 'text-[#e5cba3]' : 'text-[#315b47]'}`}
+      fill="none"
+      viewBox="0 0 32 32"
+    >
+      <path
+        d="M25.6 7.2c-5.3-5.3-14.7-3-19 4.5-3.8 6.7-2 15.4 3.8 17 5.8 1.7 13.2-3.1 16-10.7 1.7-4.6 1.3-8.7-.8-10.8Z"
+        fill="currentColor"
+      />
+      <path d="M7.4 25.1c2-7.3 8-13.7 16.8-18.2" stroke="#f7f4ec" strokeLinecap="round" strokeWidth="1.4" />
+    </svg>
+  );
 }
 
-export default function Page() {
-  const [form, setForm] = useState<FormState>(initialForm);
-  const [submitState, setSubmitState] = useState<SubmitState>({ status: 'idle', message: '' });
-  const [fieldErrors, setFieldErrors] = useState<FormErrors>({});
+function SectionKicker({ children }: { children: ReactNode }) {
+  return (
+    <p className="mb-5 flex items-center gap-3 text-[11px] font-semibold uppercase tracking-[0.22em] text-[#687b69]">
+      <span className="h-px w-8 bg-[#9aa48d]" />
+      {children}
+    </p>
+  );
+}
 
-  const utm = useMemo(() => parseUtm(), []);
+function FormField({
+  label,
+  error,
+  children,
+}: {
+  label: string;
+  error?: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className="grid gap-2">
+      <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#4f5148]">
+        {label}
+      </span>
+      {children}
+      <AnimatePresence initial={false}>
+        {error && (
+          <motion.span
+            animate={{ opacity: 1, y: 0 }}
+            className="text-xs text-[#a44032]"
+            exit={{ opacity: 0, y: -4 }}
+            initial={{ opacity: 0, y: -4 }}
+            role="alert"
+          >
+            {error}
+          </motion.span>
+        )}
+      </AnimatePresence>
+    </label>
+  );
+}
 
-  function updateField<K extends keyof FormState>(key: K, value: FormState[K]) {
-    setForm((current) => ({ ...current, [key]: value }));
-    setFieldErrors((current) => {
-      if (!current[key]) return current;
-      const error = validateField(key, value);
-      return { ...current, [key]: error };
-    });
-    setSubmitState((current) =>
-      current.status === 'loading' ? current : { status: 'idle', message: '' },
-    );
-  }
+function InterestSelect({
+  value,
+  onChange,
+  onBlur,
+  describedBy,
+  invalid,
+}: {
+  value: LeadInterest;
+  onChange: (value: LeadInterest) => void;
+  onBlur: () => void;
+  describedBy?: string;
+  invalid: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(() =>
+    interestOptions.findIndex((option) => option.value === value),
+  );
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const selectedIndex = interestOptions.findIndex((option) => option.value === value);
+  const selectedOption = interestOptions[selectedIndex] ?? interestOptions[0];
 
-  function validateForm(values: FormState): FormErrors {
-    return {
-      name: validateField('name', values.name),
-      phone: validateField('phone', values.phone),
-      comment: validateField('comment', values.comment),
-    };
-  }
-
-  function handleBlur<K extends keyof FormState>(key: K) {
-    const error = validateField(key, form[key]);
-    setFieldErrors((current) => ({ ...current, [key]: error }));
-  }
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const errors = validateForm(form);
-    setFieldErrors(errors);
-    const firstInvalidField = (Object.keys(errors) as (keyof FormState)[]).find(
-      (key) => errors[key],
-    );
-    if (firstInvalidField) {
-      document.getElementById(firstInvalidField)?.focus();
-      setSubmitState({ status: 'idle', message: '' });
-      return;
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) {
+        setOpen(false);
+      }
     }
 
-    setSubmitState({ status: 'loading', message: 'Отправляем заявку…' });
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, []);
 
-    try {
-      const response = await fetch('/api/lead', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...form,
-          ...utm,
-        }),
-      });
+  function chooseOption(option: (typeof interestOptions)[number]) {
+    onChange(option.value);
+    onBlur();
+    setOpen(false);
+    triggerRef.current?.focus();
+  }
 
-      const payload = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        const serverErrors = payload?.error?.fields as Record<string, string> | undefined;
-        if (serverErrors) {
-          setFieldErrors({
-            name: serverErrors.name,
-            phone: serverErrors.phone,
-            interest: serverErrors.interest,
-            comment: serverErrors.comment,
-          });
-        }
-
-        const message =
-          payload?.error?.message ||
-          payload?.message ||
-          'Не удалось отправить заявку. Проверьте поля и попробуйте ещё раз.';
-
-        setSubmitState({ status: 'error', message });
+  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (!open) {
+        setActiveIndex(selectedIndex);
+        setOpen(true);
         return;
       }
 
-      setSubmitState({
-        status: 'success',
-        message: payload?.data?.message || 'Заявка отправлена. Менеджер свяжется с вами в ближайшее время.',
-      });
-      setForm(initialForm);
-      setFieldErrors({});
-    } catch (error) {
-      setSubmitState({
-        status: 'error',
-        message: 'Сайт временно недоступен. Попробуйте отправить заявку позже или позвоните нам.',
-      });
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      setActiveIndex((current) => (current + direction + interestOptions.length) % interestOptions.length);
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      if (open) {
+        event.preventDefault();
+        chooseOption(interestOptions[activeIndex] ?? selectedOption);
+      }
+    } else if (event.key === 'Escape' && open) {
+      event.preventDefault();
+      setOpen(false);
+    } else if (event.key === 'Tab' && open) {
+      setOpen(false);
+      onBlur();
+    } else if (event.key === 'Home' && open) {
+      event.preventDefault();
+      setActiveIndex(0);
+    } else if (event.key === 'End' && open) {
+      event.preventDefault();
+      setActiveIndex(interestOptions.length - 1);
     }
   }
 
   return (
-    <main>
-      <style>{`
-        * { box-sizing: border-box; }
-        html { scroll-behavior: smooth; }
-        body {
-          margin: 0;
-          font-family: Arial, Helvetica, sans-serif;
-          background: #f8f3ee;
-          color: #1d1b18;
-          line-height: 1.5;
-        }
-        a { color: inherit; text-decoration: none; }
-        img { max-width: 100%; display: block; }
-        .container {
-          width: min(1120px, calc(100% - 32px));
-          margin: 0 auto;
-        }
-        .topbar {
-          background: #241a15;
-          color: #f7f3ef;
-          padding: 14px 0;
-        }
-        .topbar-inner {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 18px;
-          flex-wrap: wrap;
-        }
-        .brand { font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
-        .nav {
-          display: flex;
-          gap: 18px;
-          flex-wrap: wrap;
-          font-size: 0.95rem;
-          opacity: 0.9;
-        }
-        .hero {
-          background: linear-gradient(135deg, #f7ebdf 0%, #f2d4a8 100%);
-          padding: 48px 0 30px;
-        }
-        .hero-grid {
-          display: grid;
-          grid-template-columns: 1.2fr 0.8fr;
-          gap: 30px;
-          align-items: center;
-        }
-        .eyebrow {
-          display: inline-block;
-          background: rgba(35, 28, 23, 0.08);
-          border: 1px solid rgba(35, 28, 23, 0.15);
-          padding: 8px 12px;
-          border-radius: 999px;
-          font-size: 0.78rem;
-          font-weight: 700;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-        }
-        h1 {
-          font-size: clamp(2.4rem, 5vw, 5rem);
-          line-height: 0.96;
-          margin: 18px 0 18px;
-          letter-spacing: -0.05em;
-        }
-        .lead {
-          max-width: 560px;
-          font-size: 1.1rem;
-          margin-bottom: 24px;
-        }
-        .cta-row {
-          display: flex;
-          gap: 14px;
-          flex-wrap: wrap;
-          margin-bottom: 18px;
-        }
-        .button {
-          appearance: none;
-          border: none;
-          border-radius: 999px;
-          background: #2f261f;
-          color: white;
-          padding: 14px 22px;
-          font-weight: 700;
-          cursor: pointer;
-          transition: transform 0.15s ease;
-        }
-        .button:hover { transform: translateY(-1px); }
-        .button.secondary {
-          background: transparent;
-          border: 1px solid rgba(34, 28, 24, 0.3);
-          color: #2a221d;
-        }
-        .hero-card {
-          background: rgba(255,255,255,0.52);
-          border: 1px solid rgba(31,24,21,0.12);
-          border-radius: 28px;
-          padding: 22px;
-          box-shadow: 0 22px 50px rgba(58, 39, 24, 0.12);
-        }
-        .coffee-image {
-          border-radius: 24px;
-          overflow: hidden;
-          min-height: 420px;
-          background: linear-gradient(180deg, #d5ae79 0%, #714b2e 100%);
-          position: relative;
-        }
-        .coffee-image::before {
-          content: "";
-          position: absolute;
-          inset: 16% 18% 12% 18%;
-          border-radius: 50%;
-          background: radial-gradient(circle at 35% 35%, #f4d8a2 0%, #c68e52 18%, #6e3c24 68%, #362217 100%);
-          box-shadow: 0 30px 60px rgba(49,22,12,0.24);
-        }
-        section { padding: 54px 0; }
-        .section-title {
-          font-size: clamp(1.8rem, 3vw, 3rem);
-          line-height: 1.1;
-          margin-bottom: 10px;
-        }
-        .muted { color: #5e524d; }
-        .features {
-          display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: 18px;
-          margin-top: 26px;
-        }
-        .feature {
-          background: #fff;
-          border: 1px solid rgba(32,26,22,0.08);
-          border-radius: 20px;
-          padding: 22px 20px;
-        }
-        .feature strong {
-          display: block;
-          margin-bottom: 10px;
-          font-size: 1.05rem;
-        }
-        .catalog-grid {
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
-          gap: 18px;
-          margin-top: 24px;
-        }
-        .product {
-          background: white;
-          border-radius: 20px;
-          padding: 20px 18px;
-          border: 1px solid rgba(31,24,21,0.08);
-        }
-        .product .origin {
-          font-size: 0.8rem;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: #8d6d57;
-          margin-bottom: 6px;
-        }
-        .product h3 {
-          margin: 8px 0;
-          font-size: 1.35rem;
-        }
-        .price {
-          font-size: 1.6rem;
-          font-weight: 700;
-          margin: 12px 0 0;
-        }
-        .subscription-box, .delivery-box {
-          background: #fff;
-          border-radius: 22px;
-          padding: 26px;
-          border: 1px solid rgba(34, 27, 25, 0.08);
-        }
-        .grid-2 {
-          display: grid;
-          grid-template-columns: 1.1fr 0.9fr;
-          gap: 22px;
-          margin-top: 22px;
-        }
-        .list {
-          padding-left: 18px;
-          margin: 10px 0 0;
-        }
-        .contacts {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 18px;
-          margin-top: 24px;
-        }
-        .contact-card {
-          background: white;
-          border: 1px solid rgba(35,28,24,0.08);
-          border-radius: 20px;
-          padding: 20px;
-        }
-        .form-wrap {
-          background: white;
-          border-radius: 28px;
-          border: 1px solid rgba(35,28,24,0.08);
-          padding: 24px;
-        }
-        form {
-          display: grid;
-          gap: 14px;
-          margin-top: 18px;
-        }
-        label {
-          display: grid;
-          gap: 8px;
-          font-weight: 600;
-        }
-        input, select, textarea {
-          width: 100%;
-          border: 1px solid rgba(32,25,22,0.2);
-          border-radius: 12px;
-          padding: 12px 14px;
-          font: inherit;
-          background: #fff;
-        }
-        input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="true"] {
-          border-color: #b83227;
-        }
-        .field-error {
-          color: #8f2e28;
-          font-size: 0.9rem;
-          font-weight: 400;
-        }
-        textarea { min-height: 110px; resize: vertical; }
-        .status {
-          margin-top: 12px;
-          padding: 12px 14px;
-          border-radius: 12px;
-          font-weight: 600;
-          border: 1px solid transparent;
-        }
-        .status.success {
-          background: #eaf8ee;
-          border-color: #a9d8b8;
-          color: #1f5d37;
-        }
-        .status.error {
-          background: #fff1f0;
-          border-color: #f1b0a8;
-          color: #8f2e28;
-        }
-        footer {
-          padding: 30px 0 60px;
-          color: #5a4e49;
-        }
-        @media (max-width: 900px) {
-          .hero-grid, .grid-2, .contacts, .features, .catalog-grid {
-            grid-template-columns: 1fr;
-          }
-        }
-      `}</style>
+    <div className="relative" ref={rootRef}>
+      <button
+        aria-activedescendant={open ? `interest-option-${activeIndex}` : undefined}
+        aria-describedby={describedBy}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-invalid={invalid}
+        aria-label="Что вас интересует"
+        aria-controls="lead-interest-options"
+        className="group flex w-full items-center justify-between border-b border-[#d9d5ca] bg-transparent py-3 text-left text-[13px] text-[#1e2c23] outline-none transition hover:border-[#8d9a87] focus:border-[#315b47] aria-invalid:border-[#a44032]"
+        onClick={() => {
+          setActiveIndex(selectedIndex);
+          setOpen((current) => !current);
+        }}
+        onKeyDown={handleKeyDown}
+        ref={triggerRef}
+        role="combobox"
+        type="button"
+      >
+        <span>
+          <span className="block">{selectedOption.label}</span>
+          <span className="mt-1 block text-[10px] text-[#85877c]">{selectedOption.description}</span>
+        </span>
+        <svg
+          aria-hidden="true"
+          className={`ml-4 h-4 w-4 shrink-0 text-[#687b69] transition-transform ${open ? 'rotate-180' : ''}`}
+          fill="none"
+          viewBox="0 0 20 20"
+        >
+          <path d="m5 7.5 5 5 5-5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
+        </svg>
+      </button>
 
-      <header className="topbar">
-        <div className="container topbar-inner">
-          <div className="brand">Кварта</div>
-          <nav className="nav" aria-label="Основная навигация">
-            <a href="#about">О нас</a>
-            <a href="#catalog">Ассортимент</a>
-            <a href="#subscription">Подписка</a>
-            <a href="#delivery">Доставка</a>
-            <a href="#contacts">Контакты</a>
-            <a href="#form">Оставить заявку</a>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            className="absolute inset-x-0 top-[calc(100%+8px)] z-20 origin-top border border-[#d9d5ca] bg-[#faf9f5] p-1.5 shadow-[0_18px_36px_rgba(31,43,33,0.14)]"
+            exit={{ opacity: 0, y: -5, scale: 0.99 }}
+            initial={{ opacity: 0, y: -5, scale: 0.99 }}
+            id="lead-interest-options"
+            role="listbox"
+            transition={{ duration: 0.16 }}
+          >
+            {interestOptions.map((option, index) => (
+              <div
+                aria-selected={option.value === value}
+                className={`flex cursor-pointer items-center justify-between px-3 py-3 transition-colors ${
+                  index === activeIndex
+                    ? 'bg-[#e9e8dc]'
+                    : 'hover:bg-[#f0eee5]'
+                }`}
+                id={`interest-option-${index}`}
+                key={option.value}
+                onClick={() => chooseOption(option)}
+                onMouseEnter={() => setActiveIndex(index)}
+                onMouseDown={(event) => event.preventDefault()}
+                role="option"
+              >
+                <span>
+                  <span className="block text-[12px] text-[#26382d]">{option.label}</span>
+                  <span className="mt-1 block text-[10px] text-[#85877c]">{option.description}</span>
+                </span>
+                {option.value === value && (
+                  <svg aria-hidden="true" className="h-4 w-4 text-[#315b47]" fill="none" viewBox="0 0 20 20">
+                    <path d="m4.5 10 3.5 3.5 7.5-7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.6" />
+                  </svg>
+                )}
+              </div>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+export default function Page() {
+  const reduceMotion = useReducedMotion();
+  const [responseMessage, setResponseMessage] = useState<ResponseMessage | null>(null);
+  const {
+    control,
+    register,
+    handleSubmit,
+    reset,
+    setValue,
+    setError,
+    formState: { errors, isSubmitting },
+  } = useForm<LeadFormValues>({
+    resolver: zodResolver(leadSchema),
+    defaultValues: initialValues,
+    mode: 'onBlur',
+  });
+
+  const onSubmit = async (values: LeadFormValues) => {
+    setResponseMessage(null);
+
+    try {
+      const search = new URLSearchParams(window.location.search);
+      const response = await fetch('/api/lead', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...values,
+          utm_source: search.get('utm_source'),
+          utm_medium: search.get('utm_medium'),
+          utm_campaign: search.get('utm_campaign'),
+          utm_content: search.get('utm_content'),
+          utm_term: search.get('utm_term'),
+          gclid: search.get('gclid'),
+          pageUrl: window.location.href,
+        }),
+      });
+
+      const payload: {
+        data?: { message?: string };
+        error?: { code?: string; message?: string; fields?: Record<string, string> };
+      } = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        for (const field of ['name', 'phone', 'interest', 'comment'] as const) {
+          const message = payload.error?.fields?.[field];
+          if (message) setError(field, { type: 'server', message });
+        }
+
+        setResponseMessage({
+          type: 'error',
+          text:
+            payload.error?.message ??
+            'Не получилось отправить заявку. Попробуйте ещё раз чуть позже.',
+        });
+        return;
+      }
+
+      reset(initialValues);
+      setResponseMessage({
+        type: 'success',
+        text: 'Мы записали ваш запрос. Скоро свяжемся, ответим на вопросы и поможем выбрать свежую обжарку.',
+      });
+    } catch {
+      setResponseMessage({
+        type: 'error',
+        text: 'Не удалось связаться с сервером. Проверьте подключение и попробуйте ещё раз.',
+      });
+    }
+  };
+
+  const motionProps = reduceMotion
+    ? {}
+    : {
+        initial: 'hidden' as const,
+        whileInView: 'visible' as const,
+        viewport: { once: true, amount: 0.16 },
+        variants: reveal,
+      };
+
+  return (
+        <MotionConfig reducedMotion="user">
+        <main className="overflow-x-clip bg-[#f4f1e9] text-[#1e2c23]">
+          <header className="fixed inset-x-0 top-0 z-50 border-b border-white/15 bg-[#20352a]/95 text-white shadow-sm backdrop-blur-md">
+        <div className="mx-auto flex h-[86px] max-w-[1440px] items-center justify-between px-16">
+          <a aria-label="Кварта — на главную" className="flex items-center gap-3" href="#">
+            <BeanMark light />
+            <span className="text-[19px] font-semibold tracking-[0.22em]">КВАРТА</span>
+          </a>
+
+          <nav aria-label="Основная навигация" className="flex items-center gap-9 text-[13px] text-white/80">
+            <a className="transition hover:text-white" href="#story">Наша история</a>
+            <a className="transition hover:text-white" href="#coffee">Кофе</a>
+            <a className="transition hover:text-white" href="#subscription">Подписка</a>
+            <a className="transition hover:text-white" href="#visit">Контакты</a>
           </nav>
+
+          <a
+            className="group flex items-center gap-3 border border-white/50 px-5 py-3 text-[11px] font-semibold uppercase tracking-[0.14em] transition hover:bg-white hover:text-[#203a2d]"
+            href="#order"
+          >
+            Выбрать кофе <ArrowIcon />
+          </a>
         </div>
       </header>
 
-      <section className="hero">
-        <div className="container hero-grid">
-          <div>
-            <span className="eyebrow">Свежая обжарка</span>
-            <h1>Кофе, который пахнет утром и живёт по-честному.</h1>
-            <p className="lead">
-              Маленькая мастерская из Минска: обжариваем небольшими партиями, доставляем свежие зерна
-              в день после обжарки и делаем кофе простым, домашним и понятным.
+      <section className="relative min-h-[760px] bg-[#24372e] text-white">
+        <div className="absolute inset-0">
+          <div
+            className="absolute inset-0 bg-cover bg-center opacity-60"
+            style={{
+              backgroundImage:
+                'url("https://images.unsplash.com/photo-1442512595331-e89e73853f31?auto=format&fit=crop&w=2200&q=85")',
+            }}
+          />
+          <div className="absolute inset-0 bg-gradient-to-r from-[#17261f]/95 via-[#1c2c23]/75 to-[#1e3027]/25" />
+          <div className="absolute inset-0 bg-gradient-to-t from-[#17261f]/40 via-transparent to-[#15231d]/25" />
+        </div>
+
+        <div className="relative mx-auto grid min-h-[760px] max-w-[1440px] grid-cols-[1.05fr_0.95fr] items-center px-16 pb-20 pt-32">
+          <motion.div
+            animate="visible"
+            className="relative z-10 max-w-[690px]"
+            initial="hidden"
+            variants={stagger}
+          >
+            <motion.p
+              className="mb-7 flex items-center gap-3 text-[11px] uppercase tracking-[0.25em] text-[#d8cba8]"
+              variants={reveal}
+            >
+              <span className="h-px w-10 bg-[#d8cba8]" />
+              Минская мастерская кофе · с 2019 года
+            </motion.p>
+            <motion.h1
+              className="max-w-[700px] font-serif text-[86px] font-normal leading-[0.98] tracking-[-0.055em]"
+              variants={reveal}
+            >
+              Свежесть,
+              <br />
+              которую <span className="italic text-[#e3c997]">слышно.</span>
+            </motion.h1>
+            <motion.p
+              className="mt-7 max-w-[450px] text-[16px] leading-7 text-white/75"
+              variants={reveal}
+            >
+              Обжариваем кофе маленькими партиями. От нашей мастерской до вашей чашки — всего несколько
+              дней.
+            </motion.p>
+            <motion.div className="mt-10 flex items-center gap-7" variants={reveal}>
+              <a
+                className="group inline-flex items-center gap-8 bg-[#d9bd88] px-6 py-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#24372e] transition hover:bg-[#ead6ae]"
+                href="#coffee"
+              >
+                Найти свой кофе <ArrowIcon />
+              </a>
+              <a className="border-b border-white/45 pb-1 text-[12px] text-white/80 transition hover:border-white hover:text-white" href="#story">
+                Познакомиться с нами
+              </a>
+            </motion.div>
+          </motion.div>
+
+          <motion.div
+            animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+            className="relative flex h-[520px] items-end justify-center"
+            initial={reduceMotion ? undefined : { opacity: 0, y: 22 }}
+            transition={{ duration: 0.9, delay: 0.3, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <div className="relative h-[455px] w-[340px] rotate-[2deg] bg-[#d9c6a4] p-3 shadow-[0_35px_90px_rgba(0,0,0,0.35)]">
+              <div
+                className="relative h-full overflow-hidden bg-cover bg-center"
+                style={{
+                  backgroundImage:
+                    'url("https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=900&q=85")',
+                }}
+              >
+                <div className="absolute inset-0 bg-[#17251d]/20" />
+                <div className="absolute inset-x-5 bottom-5 border border-white/60 p-4 text-white">
+                  <p className="text-[9px] uppercase tracking-[0.28em]">Маленькая обжарка</p>
+                  <p className="mt-2 font-serif text-[26px]">Тёплое дело</p>
+                  <p className="mt-1 text-[9px] uppercase tracking-[0.22em]">Минск · Беларусь</p>
+                </div>
+              </div>
+            </div>
+            <div className="absolute -bottom-1 right-12 flex h-[122px] w-[122px] rotate-[-10deg] flex-col items-center justify-center rounded-full border border-[#d9bd88]/70 text-center text-[#e4d2aa]">
+              <span className="text-[8px] uppercase tracking-[0.2em]">обжарено</span>
+              <span className="my-1 font-serif text-[28px]">в четверг</span>
+              <span className="text-[8px] uppercase tracking-[0.2em]">привезено в пятницу</span>
+            </div>
+          </motion.div>
+
+          <div className="absolute bottom-10 left-16 right-16 flex items-center justify-between border-t border-white/20 pt-5 text-[10px] uppercase tracking-[0.18em] text-white/65">
+            <span>Партии по 5 кг</span>
+            <span>Зерно на 1–3 день после обжарки</span>
+            <span>Доставка по Минску</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="border-b border-[#dfdbd0] bg-[#f4f1e9]">
+        <div className="mx-auto grid max-w-[1440px] grid-cols-4 divide-x divide-[#dcd8cd] px-16 py-7">
+          {[
+            ['2019', 'Начали обжаривать'],
+            ['5 кг', 'Небольшие партии'],
+            ['1–3 дня', 'От ростера до вас'],
+            ['Минск', 'Наш город и дом'],
+          ].map(([value, label]) => (
+            <div className="px-8 first:pl-0" key={value}>
+              <p className="font-serif text-[26px]">{value}</p>
+              <p className="mt-1 text-[10px] uppercase tracking-[0.13em] text-[#74776d]">{label}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="py-32" id="story">
+        <motion.div
+          className="mx-auto grid max-w-[1440px] grid-cols-[0.85fr_1.15fr] gap-24 px-16"
+          {...motionProps}
+        >
+          <div className="relative min-h-[490px]">
+            <div
+              className="absolute inset-0 bg-cover bg-center"
+              style={{
+                backgroundImage:
+                  'url("https://images.unsplash.com/photo-1524350876685-274059332603?auto=format&fit=crop&w=1200&q=85")',
+              }}
+            />
+            <div className="absolute -bottom-7 -right-7 w-[225px] bg-[#e6ddc9] p-6">
+              <p className="font-serif text-[29px] italic leading-tight">«Хороший кофе не должен быть сложным»</p>
+              <p className="mt-4 text-[9px] uppercase tracking-[0.16em] text-[#6b7568]">Аня и Дмитрий, основатели</p>
+            </div>
+          </div>
+
+          <div className="flex flex-col justify-center py-8">
+            <SectionKicker>За каждым зерном — люди</SectionKicker>
+            <h2 className="max-w-[610px] font-serif text-[58px] font-normal leading-[1.08] tracking-[-0.04em]">
+              Мы начинали за барной стойкой. Теперь обжариваем своё.
+            </h2>
+            <p className="mt-7 max-w-[580px] text-[15px] leading-7 text-[#666b61]">
+              Кварта — небольшая мастерская в Минске. Аня и Дмитрий раньше работали бариста и каждый день
+              пробовали кофе, который хотелось бы забрать домой. В 2019 году мы купили первый ростер.
             </p>
-            <div className="cta-row">
-              <a className="button" href="#form">Заказать кофе</a>
-              <a className="button secondary" href="#catalog">Смотреть ассортимент</a>
-            </div>
-            <p className="muted">Четверг и пятница — дни обжарки и доставки по Минску.</p>
+            <p className="mt-4 max-w-[580px] text-[15px] leading-7 text-[#666b61]">
+              С тех пор обжариваем по четвергам партиями по пять килограммов. Не потому, что так удобнее
+              рассказывать историю — просто так кофе остаётся свежим, а мы помним каждую партию.
+            </p>
+            <a className="mt-8 inline-flex w-fit items-center gap-3 border-b border-[#758271] pb-2 text-[11px] font-semibold uppercase tracking-[0.15em]" href="#visit">
+              Заглянуть в мастерскую <ArrowIcon />
+            </a>
           </div>
-
-          <div className="hero-card">
-            <div className="coffee-image" aria-label="Пример свежесваренного кофе" />
-          </div>
-        </div>
+        </motion.div>
       </section>
 
-      <section id="about">
-        <div className="container">
-          <div className="eyebrow">Почему мы</div>
-          <h2 className="section-title">Свежесть — не маркетинг, а смысл.</h2>
-          <p className="muted">
-            Мы обжариваем небольшими партиями по 5 кг с 2019 года. Основатели — Аня и Дмитрий, раньше
-            работали бариста. Для нас важно, чтобы зерно приходило к вам в течение 1–3 дней после обжарки,
-            а не недельной давности и не с «премиальным» блеском без вкуса.
-          </p>
-
-          <div className="features">
-            <div className="feature">
-              <strong>Небольшие партии</strong>
-              Каждая обжарка свежая, контролируемая и без лишнего объёма.
-            </div>
-            <div className="feature">
-              <strong>Скорость доставки</strong>
-              Свежеобжаренное зерно доезжает до клиента быстро и по-честному.
-            </div>
-            <div className="feature">
-              <strong>Простой вкус</strong>
-              Без пафоса, без глянца, без искусственной «премиальности».
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section id="catalog">
-        <div className="container">
-          <div className="eyebrow">Ассортимент</div>
-          <h2 className="section-title">Проверенные сорта и привычный вкус</h2>
-
-          <div className="catalog-grid">
-            <article className="product">
-              <div className="origin">Эфиопия</div>
-              <h3>Иргачеффе</h3>
-              <p>Цветочный, бергамот, светлая обжарка</p>
-              <p className="price">32 BYN</p>
-            </article>
-
-            <article className="product">
-              <div className="origin">Колумбия</div>
-              <h3>Уила</h3>
-              <p>Карамель, красное яблоко</p>
-              <p className="price">29 BYN</p>
-            </article>
-
-            <article className="product">
-              <div className="origin">Бразилия</div>
-              <h3>Серрадо</h3>
-              <p>Орех, шоколад, под эспрессо</p>
-              <p className="price">26 BYN</p>
-            </article>
-
-            <article className="product">
-              <div className="origin">Дрип-пакеты</div>
-              <h3>Ассорти</h3>
-              <p>10 штук</p>
-              <p className="price">18 BYN</p>
-            </article>
-          </div>
-        </div>
-      </section>
-
-      <section id="subscription">
-        <div className="container grid-2">
-          <div className="subscription-box">
-            <div className="eyebrow">Подписка</div>
-            <h2 className="section-title">Пачки по 250 г раз в месяц</h2>
-            <p className="muted">2 пачки по 250 г, доставка бесплатно.</p>
-            <p className="price">54 BYN / мес</p>
-            <ul className="list">
-              <li>Подбор подходящего вкуса под привычку кофе</li>
-              <li>Свежая обжарка без задержек</li>
-              <li>Простой формат: дома или в офисе</li>
-            </ul>
-          </div>
-
-          <div className="delivery-box">
-            <div className="eyebrow">Как купить</div>
-            <h2 className="section-title">Самовывоз и доставка</h2>
-            <ul className="list">
-              <li>Самовывоз: Минск, ул. Короля, 9</li>
-              <li>Часы работы: пн–пт 8:00–20:00, сб–вс 10:00–18:00</li>
-              <li>Доставка по Минску в пятницу от 50 BYN — бесплатно</li>
-              <li>Свежесть важнее громких обещаний</li>
-            </ul>
-          </div>
-        </div>
-      </section>
-
-      <section id="contacts">
-        <div className="container">
-          <div className="eyebrow">Контакты</div>
-          <h2 className="section-title">Кофе без лишнего шума</h2>
-
-          <div className="contacts">
-            <div className="contact-card">
-              <strong>Адрес</strong>
-              <p>Минск, ул. Короля, 9</p>
-            </div>
-            <div className="contact-card">
-              <strong>Связь</strong>
-              <p>Telegram, Instagram, звонок — менеджер всё оформит.</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section id="form">
-        <div className="container">
-          <div className="grid-2">
+      <section className="bg-[#e9e5d9] py-28" id="coffee">
+        <div className="mx-auto max-w-[1440px] px-16">
+          <motion.div className="flex items-end justify-between" {...motionProps}>
             <div>
-              <div className="eyebrow">Заявка</div>
-              <h2 className="section-title">Оставьте заявку — мы всё оформим</h2>
-              <p className="muted">
-                Укажите, что вам нужно: подписка, разовый заказ или вопрос. Наш менеджер перезвонит и поможет
-                подобрать вариант под ваш вкус.
-              </p>
+              <SectionKicker>На каждый день и чуть особенный</SectionKicker>
+              <h2 className="font-serif text-[58px] font-normal leading-none tracking-[-0.04em]">
+                Знакомьтесь, это зерно.
+              </h2>
             </div>
+            <p className="max-w-[300px] pb-1 text-[13px] leading-6 text-[#666b61]">
+              Все пачки — 250 г. Обжариваем в четверг, отправляем в пятницу.
+            </p>
+          </motion.div>
 
-            <div className="form-wrap">
-              <form onSubmit={handleSubmit} noValidate>
-                <label>
-                  Имя
-                  <input
-                    id="name"
-                    type="text"
-                    value={form.name}
-                    onChange={(event) => updateField('name', event.target.value)}
-                    onBlur={() => handleBlur('name')}
-                    disabled={submitState.status === 'loading'}
-                    placeholder="Ваше имя"
-                    minLength={2}
-                    maxLength={100}
-                    required
-                    aria-invalid={Boolean(fieldErrors.name)}
-                    aria-describedby={fieldErrors.name ? 'name-error' : undefined}
+          <motion.div
+            className="mt-14 grid grid-cols-4 gap-5"
+            initial="hidden"
+            variants={stagger}
+            whileInView="visible"
+            viewport={{ once: true, amount: 0.12 }}
+          >
+            {products.map((product) => (
+              <motion.article
+                className="group bg-[#f8f6f0]"
+                key={product.number}
+                variants={reveal}
+              >
+                <div className="relative h-[270px] overflow-hidden bg-[#ded8c8]">
+                  <img
+                    alt={`${product.origin}: чашка свежего кофе`}
+                    className="h-full w-full object-cover transition duration-700 group-hover:scale-[1.04]"
+                    loading="lazy"
+                    src={product.photo}
                   />
-                  {fieldErrors.name && <span className="field-error" id="name-error">{fieldErrors.name}</span>}
-                </label>
-
-                <label>
-                  Телефон
-                  <input
-                    id="phone"
-                    type="tel"
-                    value={form.phone}
-                    onChange={(event) => updateField('phone', event.target.value)}
-                    onBlur={() => handleBlur('phone')}
-                    disabled={submitState.status === 'loading'}
-                    placeholder="+375 29 123-45-67"
-                    required
-                    aria-invalid={Boolean(fieldErrors.phone)}
-                    aria-describedby={fieldErrors.phone ? 'phone-error' : undefined}
-                  />
-                  {fieldErrors.phone && <span className="field-error" id="phone-error">{fieldErrors.phone}</span>}
-                </label>
-
-                <label>
-                  Что интересует
-                  <select
-                    id="interest"
-                    value={form.interest}
-                    onChange={(event) =>
-                      updateField('interest', event.target.value as FormState['interest'])
-                    }
-                    onBlur={() => handleBlur('interest')}
-                    disabled={submitState.status === 'loading'}
-                    aria-invalid={Boolean(fieldErrors.interest)}
-                    aria-describedby={fieldErrors.interest ? 'interest-error' : undefined}
-                  >
-                    <option value="subscription">Подписка</option>
-                    <option value="single_order">Разовый заказ</option>
-                    <option value="question">Вопрос</option>
-                  </select>
-                  {fieldErrors.interest && <span className="field-error" id="interest-error">{fieldErrors.interest}</span>}
-                </label>
-
-                <label>
-                  Комментарий
-                  <textarea
-                    id="comment"
-                    value={form.comment}
-                    onChange={(event) => updateField('comment', event.target.value)}
-                    onBlur={() => handleBlur('comment')}
-                    disabled={submitState.status === 'loading'}
-                    placeholder="Например: хочу попробовать смешение для дома, под эспрессо"
-                    maxLength={1000}
-                    aria-invalid={Boolean(fieldErrors.comment)}
-                    aria-describedby={fieldErrors.comment ? 'comment-error' : undefined}
-                  />
-                  {fieldErrors.comment && <span className="field-error" id="comment-error">{fieldErrors.comment}</span>}
-                </label>
-
-                <button className="button" type="submit" disabled={submitState.status === 'loading'}>
-                  {submitState.status === 'loading' ? 'Отправляем…' : 'Отправить заявку'}
-                </button>
-
-                {submitState.status !== 'idle' && (
-                  <div
-                    className={`status ${submitState.status === 'success' ? 'success' : 'error'}`}
-                    role={submitState.status === 'error' ? 'alert' : 'status'}
-                    aria-live="polite"
-                  >
-                    {submitState.message}
+                  <div className="absolute inset-0 bg-gradient-to-t from-[#1e2c23]/45 via-transparent to-[#1e2c23]/10" />
+                  <span className="absolute left-4 top-4 z-10 border border-white/70 bg-[#f4f1e9]/95 px-3 py-2 text-[9px] uppercase tracking-[0.16em] text-[#3f4d40]">
+                    {product.label}
+                  </span>
+                  <span className="absolute bottom-4 left-4 font-serif text-[17px] italic text-white/95">
+                    Партия № {product.number}
+                  </span>
+                </div>
+                <div className="p-5 pb-4">
+                  <p className="text-[9px] uppercase tracking-[0.16em] text-[#777c70]">{product.origin} · 250 г</p>
+                  <div className="mt-2 flex items-start justify-between gap-3">
+                    <h3 className="font-serif text-[27px] leading-tight">{product.name}</h3>
+                    <p className="shrink-0 font-serif text-[23px]">{product.price}<span className="ml-1 text-[10px]">BYN</span></p>
                   </div>
-                )}
-              </form>
-            </div>
-          </div>
+                  <p className="mt-2 min-h-[39px] text-[12px] leading-5 text-[#6e7168]">{product.notes}</p>
+                  <div className="mt-4 flex items-end justify-between border-t border-[#dedacf] pt-4">
+                    <div>
+                      <p className="text-[9px] uppercase tracking-[0.12em] text-[#7b7e74]">{product.roast}</p>
+                      <p className="mt-1 text-[11px] text-[#50564e]">{product.process}</p>
+                    </div>
+                    <a
+                      className="flex items-center gap-2 pb-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-[#315b47] transition group-hover:gap-3"
+                      href="#order"
+                      onClick={() => setValue('interest', 'single_order')}
+                    >
+                      Выбрать <ArrowIcon />
+                    </a>
+                  </div>
+                </div>
+              </motion.article>
+            ))}
+          </motion.div>
+
+          <p className="mt-7 text-right text-[10px] uppercase tracking-[0.15em] text-[#777c70]">
+            Цены указаны за пачку · 250 г, если не указано иначе
+          </p>
         </div>
       </section>
 
-      <footer>
-        <div className="container">Кварта — обжарка кофе для дома и офиса.</div>
+      <section className="bg-[#24372e] py-28 text-[#f4f1e9]" id="subscription">
+        <motion.div
+          className="mx-auto grid max-w-[1440px] grid-cols-[1.1fr_0.9fr] items-center gap-20 px-16"
+          {...motionProps}
+        >
+          <div>
+            <SectionKicker>Кофе дома — без напоминаний</SectionKicker>
+            <h2 className="max-w-[670px] font-serif text-[62px] font-normal leading-[1.03] tracking-[-0.04em]">
+              Раз в месяц. Две пачки. Никакой суеты.
+            </h2>
+            <p className="mt-6 max-w-[510px] text-[14px] leading-7 text-white/65">
+              Подписка для тех, кому просто нужен хороший кофе дома или в офисе. Менеджер уточнит, какой
+              способ заваривания вы любите, и подберёт подходящие зерна.
+            </p>
+            <div className="mt-9 flex gap-10">
+              <div>
+                <p className="font-serif text-[33px]">2 × 250 г</p>
+                <p className="mt-1 text-[9px] uppercase tracking-[0.16em] text-white/55">Свежего зерна</p>
+              </div>
+              <div className="h-14 w-px bg-white/20" />
+              <div>
+                <p className="font-serif text-[33px]">Бесплатно</p>
+                <p className="mt-1 text-[9px] uppercase tracking-[0.16em] text-white/55">Доставка по Минску</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="relative border border-[#bba87e]/55 p-10">
+            <span className="absolute -right-3 -top-3 h-6 w-6 rounded-full bg-[#d9bd88]" />
+            <span className="absolute -bottom-3 -left-3 h-6 w-6 rounded-full bg-[#d9bd88]" />
+            <p className="text-[10px] uppercase tracking-[0.2em] text-[#d9bd88]">Кофейная подписка</p>
+            <p className="mt-6 font-serif text-[70px] leading-none">54 <span className="text-[22px]">BYN</span></p>
+            <p className="mt-2 text-[11px] uppercase tracking-[0.16em] text-white/55">за месяц · доставка включена</p>
+            <div className="my-7 h-px bg-white/20" />
+            <ul className="space-y-3 text-[13px] text-white/75">
+              <li className="flex gap-3"><span className="text-[#d9bd88]">—</span> 2 пачки по 250 г</li>
+              <li className="flex gap-3"><span className="text-[#d9bd88]">—</span> Свежая обжарка под вашу чашку</li>
+              <li className="flex gap-3"><span className="text-[#d9bd88]">—</span> Привезём в пятницу</li>
+            </ul>
+            <a
+              className="mt-8 flex items-center justify-between bg-[#d9bd88] px-5 py-4 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#24372e] transition hover:bg-[#ead6ae]"
+              href="#order"
+              onClick={() => {
+                setValue('interest', 'subscription', { shouldDirty: true });
+              }}
+            >
+              Хочу подписку <ArrowIcon />
+            </a>
+          </div>
+        </motion.div>
+      </section>
+
+      <section className="py-28">
+        <div className="mx-auto max-w-[1440px] px-16">
+          <motion.div className="text-center" {...motionProps}>
+            <SectionKicker>Просто и по-человечески</SectionKicker>
+            <h2 className="font-serif text-[55px] font-normal tracking-[-0.04em]">
+              От ростера до чашки — три шага.
+            </h2>
+          </motion.div>
+          <motion.div
+            className="mt-16 grid grid-cols-3 border-y border-[#d9d5ca]"
+            initial="hidden"
+            variants={stagger}
+            whileInView="visible"
+            viewport={{ once: true, amount: 0.2 }}
+          >
+            {[
+              ['01', 'Обжариваем', 'Каждый четверг, небольшими партиями по 5 кг.'],
+              ['02', 'Собираем ваш заказ', 'Подписка, любимый сорт или просто вопрос — менеджер всё оформит.'],
+              ['03', 'Привозим свежим', 'В пятницу доставляем по Минску или ждём вас на самовывозе.'],
+            ].map(([number, title, text], index) => (
+              <motion.article
+                className={`py-8 ${index ? 'border-l border-[#d9d5ca] pl-9' : 'pr-9'} ${index === 1 ? 'px-9' : ''}`}
+                key={number}
+                variants={reveal}
+              >
+                <span className="font-serif text-[39px] text-[#b4a17b]">{number}</span>
+                <h3 className="mt-5 font-serif text-[28px]">{title}</h3>
+                <p className="mt-3 max-w-[300px] text-[13px] leading-6 text-[#6d7168]">{text}</p>
+              </motion.article>
+            ))}
+          </motion.div>
+        </div>
+      </section>
+
+      <section className="border-y border-[#dedacf] bg-[#e9e5d9] py-28" id="visit">
+        <motion.div
+          className="mx-auto grid max-w-[1440px] grid-cols-[1fr_0.8fr] gap-20 px-16"
+          {...motionProps}
+        >
+          <div>
+            <SectionKicker>Мы в Минске</SectionKicker>
+            <h2 className="font-serif text-[59px] font-normal leading-[1.05] tracking-[-0.04em]">
+              Если рядом — заходите. Если нет — привезём.
+            </h2>
+            <p className="mt-6 max-w-[490px] text-[14px] leading-7 text-[#666b61]">
+              Самовывоз из мастерской на Короля, 9. Или доставка по Минску в пятницу. Заказ от 50 BYN
+              привезём бесплатно.
+            </p>
+            <div className="mt-10 grid grid-cols-2 gap-8 border-t border-[#cfcbbf] pt-6">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.16em] text-[#7a7e73]">Адрес</p>
+                <p className="mt-2 font-serif text-[23px]">Минск, Короля, 9</p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.16em] text-[#7a7e73]">Часы работы</p>
+                <p className="mt-2 text-[13px] leading-6">Пн–пт · 8:00–20:00<br />Сб–вс · 10:00–18:00</p>
+              </div>
+            </div>
+          </div>
+          <div className="relative min-h-[390px] overflow-hidden bg-[#88917a]">
+            <div
+              className="absolute inset-0 bg-cover bg-center grayscale-[20%]"
+              style={{
+                backgroundImage:
+                  'url("https://images.unsplash.com/photo-1445116572660-236099ec97a0?auto=format&fit=crop&w=1200&q=85")',
+              }}
+            />
+            <div className="absolute inset-0 bg-[#22352b]/20" />
+            <div className="absolute bottom-5 left-5 right-5 flex items-center justify-between bg-[#f4f1e9] px-5 py-4">
+              <div>
+                <p className="text-[9px] uppercase tracking-[0.16em] text-[#73776c]">Заходите на чашку</p>
+                <p className="mt-1 font-serif text-[21px]">Мастерская «Кварта»</p>
+              </div>
+              <a aria-label="Перейти к форме заявки" className="flex h-10 w-10 items-center justify-center bg-[#315b47] text-white" href="#order">
+                <ArrowIcon diagonal />
+              </a>
+            </div>
+          </div>
+        </motion.div>
+      </section>
+
+      <section className="bg-[#f4f1e9] py-28" id="order">
+        <motion.div
+          className="mx-auto grid max-w-[1440px] grid-cols-[0.85fr_1.15fr] gap-24 px-16"
+          {...motionProps}
+        >
+          <div className="pt-4">
+            <SectionKicker>Будем на связи</SectionKicker>
+            <h2 className="font-serif text-[58px] font-normal leading-[1.06] tracking-[-0.04em]">
+              Давайте подберём вам кофе.
+            </h2>
+            <p className="mt-6 max-w-[410px] text-[14px] leading-7 text-[#686d63]">
+              Оставьте номер и пару слов о том, что ищете. Менеджер перезвонит, ответит на вопросы и оформит
+              заказ.
+            </p>
+            <div className="mt-10 border-t border-[#d9d5ca] pt-5">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-[#777b70]">Удобнее написать?</p>
+              <p className="mt-2 font-serif text-[23px]">Напишите нам в Telegram</p>
+              <p className="mt-1 text-[11px] text-[#787b72]">Ссылку на чат подставим перед запуском сайта</p>
+            </div>
+          </div>
+
+          <div className="border border-[#dedacf] bg-[#faf9f5] p-10">
+            <div className="flex items-start justify-between border-b border-[#e2ded4] pb-6">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.18em] text-[#74806f]">Форма заявки</p>
+                <p className="mt-2 font-serif text-[27px]">Это займёт минуту</p>
+              </div>
+              <BeanMark />
+            </div>
+
+            <form
+              className={`mt-7 grid grid-cols-2 gap-x-6 gap-y-5 ${responseMessage?.type === 'success' ? 'hidden' : ''}`}
+              onSubmit={handleSubmit(onSubmit)}
+              noValidate
+            >
+              <FormField error={errors.name?.message} label="Как к вам обращаться">
+                <input
+                  aria-invalid={Boolean(errors.name)}
+                  autoComplete="name"
+                  className="form-input"
+                  id="lead-name"
+                  placeholder="Например, Анна"
+                  {...register('name')}
+                  aria-describedby={errors.name ? 'lead-name-error' : undefined}
+                />
+                {errors.name?.message && <span id="lead-name-error" className="sr-only">{errors.name.message}</span>}
+              </FormField>
+
+              <FormField error={errors.phone?.message} label="Номер телефона">
+                <input
+                  aria-invalid={Boolean(errors.phone)}
+                  autoComplete="tel"
+                  className="form-input"
+                  id="lead-phone"
+                  inputMode="tel"
+                  placeholder="+375 29 123-45-67"
+                  {...register('phone')}
+                  aria-describedby={errors.phone ? 'lead-phone-error' : undefined}
+                />
+                {errors.phone?.message && <span id="lead-phone-error" className="sr-only">{errors.phone.message}</span>}
+              </FormField>
+
+              <div className="col-span-2">
+                <FormField error={errors.interest?.message} label="Что вас интересует">
+                  <Controller
+                    control={control}
+                    name="interest"
+                    render={({ field }) => (
+                      <InterestSelect
+                        describedBy={errors.interest ? 'lead-interest-error' : undefined}
+                        invalid={Boolean(errors.interest)}
+                        onBlur={field.onBlur}
+                        onChange={field.onChange}
+                        value={field.value}
+                      />
+                    )}
+                  />
+                  {errors.interest?.message && <span id="lead-interest-error" className="sr-only">{errors.interest.message}</span>}
+                </FormField>
+              </div>
+
+              <div className="col-span-2">
+                <FormField error={errors.comment?.message} label="Комментарий · по желанию">
+                  <textarea
+                    aria-describedby={errors.comment ? 'lead-comment-error' : undefined}
+                    aria-invalid={Boolean(errors.comment)}
+                    className="form-input min-h-[112px] resize-y"
+                    id="lead-comment"
+                    maxLength={1000}
+                    placeholder="Расскажите, какой кофе вы любите или что хотите узнать"
+                    {...register('comment')}
+                  />
+                  {errors.comment?.message && <span id="lead-comment-error" className="sr-only">{errors.comment.message}</span>}
+                </FormField>
+              </div>
+
+              <div className="col-span-2 flex items-center justify-between gap-6 pt-2">
+                <button
+                  className="group inline-flex min-w-[235px] items-center justify-between bg-[#315b47] px-6 py-4 text-[10px] font-semibold uppercase tracking-[0.16em] text-white transition hover:bg-[#243f32] disabled:cursor-wait disabled:opacity-60"
+                  disabled={isSubmitting}
+                  type="submit"
+                >
+                  {isSubmitting ? 'Отправляем…' : 'Отправить заявку'}
+                  <ArrowIcon />
+                </button>
+                <p className="max-w-[235px] text-[10px] leading-5 text-[#81847b]">
+                  Нажимая кнопку, вы соглашаетесь на обработку данных для связи по заявке.
+                </p>
+              </div>
+              <div className="col-span-2 min-h-7" aria-live="polite">
+                <AnimatePresence mode="wait">
+                  {responseMessage?.type === 'error' && (
+                    <motion.p
+                      animate={{ opacity: 1, y: 0 }}
+                      className="border-l-2 border-[#a44032] py-2 pl-3 text-[12px] text-[#a44032]"
+                      exit={{ opacity: 0, y: -5 }}
+                      initial={{ opacity: 0, y: 5 }}
+                      key={responseMessage.text}
+                      role="alert"
+                    >
+                      {responseMessage.text}
+                    </motion.p>
+                  )}
+                </AnimatePresence>
+              </div>
+            </form>
+            <AnimatePresence mode="wait">
+              {responseMessage?.type === 'success' && (
+                <motion.div
+                  animate={{ opacity: 1, y: 0 }}
+                  className="py-10"
+                  exit={{ opacity: 0, y: 10 }}
+                  initial={{ opacity: 0, y: 10 }}
+                  key="lead-success"
+                  role="status"
+                >
+                  <div className="flex items-center gap-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-[#74806f]">
+                    <span className="h-px w-8 bg-[#9aa48d]" />
+                    Уже передали Ане и Дмитрию
+                  </div>
+                  <div className="mt-8 flex items-start gap-6">
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#e7ecdf] text-[#315b47]">
+                      <svg aria-hidden="true" className="h-6 w-6" fill="none" viewBox="0 0 24 24">
+                        <path d="m6 12 4 4 8-9" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" />
+                      </svg>
+                    </div>
+                    <div>
+                      <h3 className="font-serif text-[34px] leading-tight text-[#263c2f]">
+                        Скоро поговорим о кофе.
+                      </h3>
+                      <p className="mt-3 max-w-[430px] text-[14px] leading-7 text-[#6c7167]">
+                        {responseMessage.text}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-9 border-t border-[#e2ded4] pt-5">
+                    <p className="text-[11px] text-[#777b70]">
+                      А пока рассказываем: кофе обжариваем по четвергам, а в пятницу уже развозим по Минску.
+                    </p>
+                    <button
+                      className="mt-6 border-b border-[#82917d] pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#315b47] transition hover:border-[#315b47]"
+                      onClick={() => {
+                        reset(initialValues);
+                        setResponseMessage(null);
+                      }}
+                      type="button"
+                    >
+                      Оставить ещё одну заявку
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </motion.div>
+      </section>
+
+      <footer className="bg-[#1c2d24] text-[#f4f1e9]">
+        <div className="mx-auto max-w-[1440px] px-16">
+          <div className="flex items-center justify-between border-b border-white/15 py-9">
+            <a className="flex items-center gap-3" href="#">
+              <BeanMark light />
+              <span className="text-[16px] font-semibold tracking-[0.22em]">КВАРТА</span>
+            </a>
+            <p className="text-[11px] text-white/55">Маленькая кофейная мастерская · Минск</p>
+            <a className="flex items-center gap-2 text-[10px] uppercase tracking-[0.14em] text-white/75 transition hover:text-white" href="#order">
+              Оставить заявку <ArrowIcon />
+            </a>
+          </div>
+          <div className="flex justify-between py-5 text-[9px] uppercase tracking-[0.13em] text-white/40">
+            <span>Обжариваем с заботой, с 2019 года</span>
+            <span>© Кварта, 2026</span>
+          </div>
+        </div>
       </footer>
     </main>
+    </MotionConfig>
   );
 }
