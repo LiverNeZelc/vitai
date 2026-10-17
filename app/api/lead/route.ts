@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createLead, DuplicateLeadError } from "@/lib/leads";
 import { validateLead } from "@/lib/lead-validation";
+import { sendLeadToTelegram } from "@/lib/telegram";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,10 +39,14 @@ export async function POST(request: Request) {
   }
 
   try {
-    const id = await createLead(
-      validation.data,
-      request.headers.get("referer")?.slice(0, 2048) ?? null,
-    );
+    const referrer = request.headers.get("referer")?.slice(0, 2048) ?? null;
+    const id = await createLead(validation.data, referrer);
+
+    try {
+      await sendLeadToTelegram(id, { ...validation.data, referrer });
+    } catch (error) {
+      console.error(`Lead ${id} was saved, but its Telegram notification failed:`, error);
+    }
 
     return NextResponse.json(
       { data: { id, accepted: true, message: "Заявка принята." } },
